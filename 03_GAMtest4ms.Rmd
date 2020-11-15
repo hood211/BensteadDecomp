@@ -1,0 +1,186 @@
+---
+title: "01_GAMtest"
+author: "JMH"
+date: "10/26/2020"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    number_sections: yes
+    theme: cosmo
+    highlight: tango
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+editor_options:
+  chunk_output_type: console
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(mgcv)
+library(lme4)
+library(ggpubr)
+library(stargazer)
+library(tidymv)
+library(mgcViz)
+```
+
+```{r echo=FALSE}
+decomp <- read.csv("01d_DecompDat.csv", row.names = 1) %>%  
+  arrange(stream, rep, monthN) %>% 
+  mutate(stream = as.factor(stream))
+```
+
+# Approach
+Our goal here is to test the capability of linear mixed effects models (LMEs) and generalized additive mixed models (GAMMs) to extract a known log-linear temperature dependency buried within a nonlinear seasonal pattern. We will create fake data with a known seasonality and temperature dependency, build a GAM model similar in structure to that used to model fine-meshed decomposition, and evaluate whether or not the GAMM and LME models can extract the correct seasonality and temperature dependency. Data and code for this analysis can be found on  [github site](https://github.com/hood211/BensteadDecomp).
+
+## Data simulation
+The first step is to generate simulated $log_e$ decomposition rates which are composed from two components: a linear temperature dependence and a nonlinear seasonality. We began with our observed temperature data (expressed as $kT^{-1}$) from the 9 streams and estimated the first component of decomposition using an Arrhenius-Boltzman model and random error (V):
+
+$$k_{temp} = a + -E_akT^{-1} + V$$
+
+where *a* is the intercept, $E_a$ is the temperature dependence of log decomposition rate (eV), *k* is the Boltzman factor ($8.61 x 10^{-5}$ eV $K^{-1}$),  *T* is temperature in degrees kelvin, and *V* is random error which was generated from a normal distribution (mean = 0, standard deviation = 0.02). This equation was parameterized with the observed $E_a$ estimate for fine-mesh decomposition rate ($E_a$ = 0.08 eV) and an intercept (*a*) which was generated to make the combined decomposition rate on the same scale as observed rates. We estimated the seasonal component of decomposition rate using a second-order polynomial model:
+$$k_{seas,1} = a + B_1  Month + B_2  Month^2 + V$$
+where $B_1$ and $B_2$ are regression coefficients describing the relationship between decomposition and month which followed a unimodal relationship. Finally, we summed $k_{temp}$ and $k_{seas}$ to calculate the total decomposition rate ($k_{tot}$).
+
+## Model Evaluation
+We fit both LMEs and GAMMs to our simulated data to determine if these approaches could identify the known temperature dependency or temperature dependency and seasonality, respectively. Our LME and GAMM models followed the same structure used in the paper. The LME model contained a fixed effect for inverse temperature ($kT^{-1}$) and a random intercept for stream. The GAMM model contained a spline for month which differed by stream group (see Fig. 4A), a linear term for inverse temperature ($kT^{-1}$), and an autoregressive-moving-average (ARMA) model to characterize temporal autocorrelation. GAMMs were conducted with the function "*gamm*" from the package *mgcv* with a cyclic cubic regression spline and a maximum of 12 knots. The primary goal of these analysis is to compare the estimated temperature dependency of decomposition (i.e., the coefficient for $kT^{-1}$) and the spline for month to the known values.
+
+
+# Results
+## Simulated data
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(816)
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# we add the simulated to data to the raw fine-mesh decomposition data.
+FakeK <- decomp %>% 
+  # a column with some random variation
+  mutate(ranNum = rnorm(dim(decomp)[1], mean = 0, sd = 0.02),
+         # the temperature effect - this is the model from the most likely GAM
+         TempEffect = (-4.35 + -0.08*ArrheniusC)+ranNum,
+         # the seasonal effect 
+         # Intercept adjusted to make range same as temp effect
+         SeasEffect1 = ((-8.5 + 0.2*monthN + -0.015*monthN^2) +ranNum)*0.55, #0.55 to make range smaller, a bit closer  to real k
+         # add them together (intercept incorporated into temp effect)
+         kTot1 = TempEffect + SeasEffect1) 
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+summary(FakeK %>% 
+  group_by(stream) %>% 
+  nest() %>% 
+  mutate(cor = map(data, ~cor(.x$monthN, .x$ArrheniusC))) %>% 
+  unnest(cor, .drop = TRUE))
+
+cor(FakeK$SeasEffect1, FakeK$ArrheniusC, method = "pearson")
+```
+
+
+Patterns in the simulated temperature and seasonality components of decomposition match our observerved data (Fig. 1).
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+sim.Temp.p <- ggplot() +
+  geom_point(data = FakeK, aes(y = TempEffect, x = ArrheniusC)) +
+  # geom_abline(intercept = -4.35, slope = -0.08, color = "red") + # model fit
+  theme_bw() +
+  ylim(-4.6,-4.1) +
+  ylab(expression(paste(k_[temp]))) +
+  xlab(expression(paste("Temperature (",kT^{-1},")")))
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+sim.Month.p <- ggplot(FakeK,
+       aes(y = SeasEffect1, x = monthN)) +
+  geom_point()  +
+  # stat_smooth() +
+    theme_bw() +
+  ylab(expression(paste(k_[seas]))) +
+  xlab("Month")
+```
+
+```{r echo=FALSE, fig.height=8, fig.width=4, message=FALSE, warning=FALSE}
+ggarrange(sim.Month.p, sim.Temp.p, nrow = 2, ncol = 1, labels = c("A", "B"))
+```
+
+
+**Figure 1.** Simulated decomposition rates associated with seasonality (A, $k_{seas}$) and temperature (B, $k_{temp}$) related to month or temperature respectively. 
+
+
+
+## Model results
+
+In general, our simulations indicate that the GAMM models can accurately characterize both the temperature dependency and seasonality of decomposition rates. The GAMM models accurately predicted both the known temperature dependency ($kT^{-1}$ coef: known = -0.08 eV; GAMM prediction =  -0.08 (± 0.006); Table 1) and seasonality (Fig. 2) of decomposition. In contrast, the LME models over-estimated the decomposition rate to about the same degree that we observed with the real data ($kT^{-1}$ coef: known = -0.08 eV; LME prediction =  -0.18 (± 0.003);Table 1).
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Tweak factors and seasons
+FakeK$group <- "NA"
+spring <- c("ami", "schultz")
+may <- c("hendrick", "town")
+june <- c("coon", "choco", "stamp")
+july <- c("lick", "mayfield")
+FakeK$group <- as.factor(as.character(ifelse(FakeK$stream %in% spring, "spring",
+                                              ifelse(FakeK$stream %in% may, "may",
+                                                     ifelse(FakeK$stream %in%  june, "june",
+                                                            ifelse(FakeK$stream %in%  july, "july", "NA"))))))
+FakeK$Only2Groups <- "NA"
+FakeK$Only2Groups <- as.factor(as.character(ifelse(FakeK$group == "july" | FakeK$group == "june", "Summer", "Spring")))
+
+FakeK$stream <- as.factor(FakeK$stream)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Correlation structure
+cor1a <- corARMA(p = 1, q = 0, form = ~ monthN | stream / rep) # 1 time step, 1 smoothing
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# GAMM model for kTot1
+kTot1.gm <- gamm(kTot1 ~ ArrheniusC + s(monthN, by = Only2Groups, bs = "cc", k = 12)+ s(stream, bs="re"), 
+                      correlation = cor1a, data = FakeK)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# LME model for kTot1
+kTot1.lm <- lme(kTot1 ~ ArrheniusC, random = ~1|stream, data = FakeK)
+```
+
+
+**Table 1.** Summary table of generalized additive model and linear mixed effects model analyses of $k_{tot}$.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+stargazer(kTot1.gm$lme, kTot1.lm, type = "text") 
+```
+
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# predict data for gams
+kTot1.gm.pred <- predict_gam(kTot1.gm$gam)
+
+ggplot() +
+  stat_smooth(data = kTot1.gm.pred, aes(y = fit, x= monthN)) +
+  geom_point(data = FakeK, aes(y =SeasEffect1-4.35, x = monthN)) +
+  theme_bw() +
+  ylab(expression(paste("Decomposition rate"))) +
+  xlab("Month") +
+  theme(legend.position = c(0.5,0.15),
+        legend.background = element_rect(fill = "transparent"))
+
+```
+
+**Figure 3.** The relationship between simulated ($k_{seas}$) or predicted ($k_{tot}$) decomposition rate and month for seasonality data simulated using a polynomial (A) or a sin function (B). Here, we compare the simulated seasonality component, excluding the temperature dependency, to the GAMM predictions of total decomposition rate. To place these data on the same scale we subtracted -4.35 from the simulated seasonal decomposition rate ($k_{seas}$)
+
